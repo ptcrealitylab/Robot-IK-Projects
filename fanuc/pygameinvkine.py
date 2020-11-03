@@ -266,6 +266,7 @@ class ProjectionViewer:
             if self.displayEdges:
                 for n1, n2 in wireframe.edges:
                     pygame.draw.aaline(self.screen, self.edgeColour, wireframe.nodes[n1][:2], wireframe.nodes[n2][:2], 1)
+                    print(wireframe.nodes[n1][:2], wireframe.nodes[n2][:2])
 
             if self.displayNodes:
                 for node in wireframe.nodes:

@@ -1,0 +1,60 @@
+X Y Z ROTATION
+c = cos
+s = sin
+1,2,3 = alpha, beta, sigma OR theta, phi, psi
+R = X(alpha) * Y(beta) * Z(sigma) -> composition of extrinsic rotations
+   about axes z, y, then x. OR a composition of 
+       intrinsic rotations about x, y', z''
+
+
+X1Y2Z3
+[ c2c3,             -c2s3,         s2]
+[ c1s3 + c3s1s2, c1c3 - s1s2s3, -c2s1]
+[ s1s3 - c1c3s2, c3s1 + c1s2s3, c1c2]
+
+[ cos(beta)*cos(sigma),-1 * cos(beta)*sin(sigma), sin(beta)]
+[   cos(alpha)*sin(sigma) + cos(sigma)*sin(alpha)*sin(beta), 
+    cos(alpha) * cos(sigma) - sin(alpha)*sin(beta)*sin(sigma), 
+    -1 * cos(beta)*sin(alpha)]
+[ sin(alpha)*sin(sigma) - cos(alpha)*cos(sigma)*sin(beta), 
+    cos(sigma)*sin(alpha) + cos(alpha)*sin(beta)*sin(sigma), 
+    cos(alpha)*cos(beta)]
+
+if you have the two vectors a and b and want to get the rotation matrix
+needed to transform one into the other, you can follow these steps:
+The axis of rotation is the normalized cross-product:
+u = cross(a, b) / norm(cross(a, b))
+The rotational angle is defined by:
+alpha = atan2(norm(cross(a, b)), dot(a, b))
+Use the above formula to create R.
+An equivalent solution:
+na   = a / norm(a);
+nb   = b / norm(b);
+v    = cross(na, nb);
+skew = [0, -v(3), v(2); v(3), 0, -v(1); -v(2), v(1), 0];
+R    = eye(3) + skew + skew ^ 2 * (1 - dot(na, nb)) / (norm(v))^2;
+
+
+
+QUATERNIONS 
+https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
+https://www.autonomousrobotslab.com/frame-rotations-and-representations.html
+f(p) = q * p * q^-1 
+
+q = [q0 q1 q2 q3]T = [qw qx qy qz]T
+|q|^2 = q0^2 + q1^2 + q2^2 + q3^2 = 1 
+
+Associate a quaternion with a rotation around an axis 
+q0 = qw = cos(a/2)
+q1 = qx = sin(a/2)cos(betax)
+q2 = qy = sin(a/2)cos(betay)
+q3 = qz = sin(a/2)cos(betaz)
+where α is a simple rotation angle (the value in radians 
+of the angle of rotation) and cos(βx), cos(βy) and cos(βz) 
+are the "direction cosines" locating the axis of rotation (Euler's Rotation Theorem).
+
+TAIT-BRYAN ANGLES
+HEADING/YAW  - psi   : rotation about Z 
+PITCH        - theta : rotation about Y 
+ROLL/BANK    - phi   : rotation about X
+X POINTS FORWARD, Y RIGHT, Z DOWN
