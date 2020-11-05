@@ -51,7 +51,27 @@
 #	 end
 #	end
 
+# WE WILL USE EULER ANGLES AS LIMITATIONS
+# THEN CONVERT TO QUATERNION TO PREVENT 
+# GIMBAL LOCK. 
+
+# THIS MEANS one or two of the i,j,k axes 
+# will be 
+
 import numpy as np
+from rotations import *
+
+def quatsFromJointLimits(jlims):
+	quats = []
+	for min_max, axis in jlims:
+		lower = min_max[0]
+		upper = min_max[1]
+		temp = []
+		temp.append(axisAngleToQuat(axis, lower))
+		temp.append(axisAngleToQuat(axis, upper))
+		quats.append(temp)
+
+	return quats
 
 def distanceBetween(j1, j2): 
 	return abs(np.linalg.norm(j1-j2))
@@ -60,20 +80,31 @@ def distanceBetween(j1, j2):
 # 	pass
 
 class SimpleArm:
-	def __init__(self):
-		self.nodes = np.zeros((0, 4))
-		self.edges = []
+	# def __init__(self):
+	# 	self.nodes = np.zeros((0, 4))
+	# 	self.edges = []
+	# 	self.j_const = []
 
-	def __init__(self, nodes, edges):
-		self.edges = []
-		if (nodes.shape[1] == 3):
-			self.nodes = np.zeros((0,4))
-			self.addNodes(nodes)
-		else:
-			self.nodes = nodes
-		self.addEdges(edges)
-		self.distances = [distanceBetween(self.nodes[i,:], self.nodes[i+1,:]) 
-							for i in range(self.nodes.shape[0] - 1)]
+	def __init__(self, *args):
+		if (len(args) >= 2):
+			nodes = args[0]
+			edges = args[1]
+			self.edges = []
+			if (nodes.shape[1] == 3):
+				self.nodes = np.zeros((0,4))
+				self.addNodes(nodes)
+			else:
+				self.nodes = nodes
+			self.addEdges(edges)
+			self.distances = [distanceBetween(self.nodes[i,:], self.nodes[i+1,:]) 
+								for i in range(self.nodes.shape[0] - 1)]
+			self.jlims = []
+		if (len(args) == 3):
+			self.jlims = quatsFromJointLimits(args[2])
+			self.axes  = [s[1] for s in args[2]]
+			self.angle_lims = [s[0] for s in args[2]]
+		self.rotations = [0 for i in range(len(edges))]
+		self.eulerangles = [EulerAngles(0,0,0) for i in range(len(edges))]
 
 	def checkDistances(self, new_dists):
 		for a, b in zip(self.distances, new_dists):
@@ -91,6 +122,9 @@ class SimpleArm:
 
 		self.distances = temp
 
+	def copy(self):
+		return SimpleArm(self.nodes, self.edges, self.jlims)
+
 	def addNodes(self, node_array):
 		ones_column = np.ones((len(node_array), 1))
 		ones_added = np.hstack((node_array, ones_column))
@@ -98,6 +132,12 @@ class SimpleArm:
 
 	def addEdges(self, edgeList):
 		self.edges += edgeList
+
+	def currRot(self):
+		print("CURRENT ROTATIONS:")
+		for i, rot in enumerate(self.rotations):
+			print("\tJ%s: %s" % (i + 1, rot))
+			# print("\tJ%s: %s" % (i + 1, self.eulerangles[i]))
 
 	def outputNodes(self):
 		print("\n --- Nodes --- ")
@@ -125,8 +165,30 @@ class SimpleArm:
 	def num_links(self):
 		return len(self.edges)
 
+	def setAngles(self, i, theta):
+		self.rotations[i] = theta
+		curr_axis = self.axes[i]
+		index = curr_axis.index(1)
+
+		self.eulerangles[i].setByIndex(index, radians(theta))
+
+	def getAngle(self, i):
+		return self.rotations[i]
+
+	def getEulerAngles(self, i):
+		return self.eulerangles[i]
+
 	def getNode(self, pos):
 		return self.nodes[pos,:][:-1]
+
+	def getJLims(self, pos):
+		return self.jlims[pos]
+
+	def getAngleLims(self, pos):
+		return self.angle_lims[pos]
+
+	def getAxis(self, pos):
+		return self.axes[pos]
 
 	def getEndEffector(self):
 		return self.nodes[self.num_links(), :][:-1]
@@ -142,6 +204,96 @@ class SimpleArm:
 	def createWireframe(self):
 		return pik.Wireframe(self.nodes, self.edges)
 
+	def constrainQuat(self, q, motor_index):
+		euler = quatToEuler(q).toList()
+		# if 180, set to 0 (due to floating point errors)
+		for i, ang in enumerate(euler):
+			if ang > 179 and ang < 181:
+				euler[i] = 0
+
+		# print("CURRENT INDEX: %s" % (motor_index))
+		# print("EULER ANGLES: %s" % euler)
+		axis = self.getAxis(motor_index)
+		j_min, j_max = self.getAngleLims(motor_index)
+		angle = self.getAngle(motor_index)
+		focus_index = axis.index(1)
+		focus_angle = euler[focus_index]
+		# print("FOCUS ANGLE: %s" %(focus_angle))
+		# print("AXIS:", axis)
+		# print("JOINT LIMITATIONS: %s" % ([j_min, j_max]))
+		# print("CURRENT ANGLE: %s" % (angle))
+
+		if angle == j_min or angle == j_max:
+			return Quaternion(0,0,0,0)
+		elif focus_angle < angle + j_min:
+			euler[focus_index] = j_min
+			self.setAngles(motor_index, j_min)
+			return eulerToQuat(EulerAngles(euler[2], euler[1], euler[0]))
+		elif focus_angle > angle + j_max:
+			euler[focus_index] = j_max
+			self.setAngles(motor_index, j_max)
+			return eulerToQuat(EulerAngles(euler[2], euler[1], euler[0]))
+		else: 
+			self.setAngles(motor_index, angle + focus_angle)
+			return q
+
+	def rotateJByQuat(self, index, q):
+		last_index = self.num_links()
+		if (index == last_index):
+			# can't rotate last joint --> TCP 
+			return 
+
+		joint      = self.getNode(index)
+		next_joint = self.getNode(index + 1)
+
+		child_joints = [self.getNode(i) for i in range(index + 2, last_index + 1)]
+
+		vec = next_joint - joint
+
+		new_joint = rotatePByQuat(vec, q) + joint
+		self.setNode(index + 1, new_joint)
+		ctr = index + 2
+		for extra in child_joints: 
+			vec = extra - joint
+			self.setNode(ctr, rotatePByQuat(vec, q) + joint)
+			ctr += 1
+
+	def isQuatWithinBounds(self, q_check, q_range):
+		q_min = q_range[0]
+		q_max = q_range[1]
+
+		# Criteria for True
+		# If 0's line up 
+		# If each component stays within max and min bounds
+		q_check_list = q_check.toList()
+		q_min_list   = q_min.toList()
+		q_max_list   = q_max.toList()
+
+		for i, q_c in enumerate(q_check_list):
+			q_min_val = q_min_list[i]
+			q_max_val = q_max_list[i]
+			if q_min_val != q_c and q_min_val == 0:
+				return False
+			if q_c <= q_min_val or q_c >= q_max_val:
+				return False
+
+		return True
+
+	def checkBounds(self, j_to_rotate, motor_index, target):
+		# collect motor coords and its motor range
+		motor       = self.getNode(motor_index)
+		motor_range = self.getJLims(motor_index)
+
+		# change axis of rotation to motor's position
+		curr_vec   = j_to_rotate - motor 
+		target_vec = target      - motor
+
+		quat = findQuatforVecs(curr_vec, target_vec)
+		return self.isQuatWithinBounds(quat, motor_range)
+		# if not self.isQuatWithinBounds(quat, motor_range):
+			# place previous point in a position such that 
+			# the target is within motor range
+
 	# def angleBetweenJoints(self, j1, j2):
 
 # [1 0 0]
@@ -154,20 +306,19 @@ j3 = (0, -116 ,777.484)
 j4 = (256, 0, 969.484)
 fanuc_nodes = [j1, j2, j3, j4]
 fanuc_edges = [(0,1), (1,2), (2,3)]
-s = SimpleArm(np.array(fanuc_nodes), fanuc_edges)
-copy = SimpleArm(np.array(fanuc_nodes), fanuc_edges)
+
+# ASSUME CREATION OF SIMPLEARM IS ROBOT'S ZERO POSITION
+# CALCULATE MIN AND MAX QUATERNION ROTATIONS FOR EACH MOTOR
+fanuc_motors = [[(-180, 180), (0,0,1)], [(-60, 120), (0,1,0)], [(-45, 45), (0,1,0)]]
+
+s = SimpleArm(np.array(fanuc_nodes), fanuc_edges, fanuc_motors)
+copy = SimpleArm(np.array(fanuc_nodes), fanuc_edges, fanuc_motors)
+copy2 = SimpleArm(np.array(fanuc_nodes), fanuc_edges, fanuc_motors)
 test = SimpleArm(np.array([(0,0,0),(1,1,1),(2,2,2)]), [(0,1), (1,2)])
-# test.outputDistances()
-s.outputDistances()
-# print(s.num_links())
 
 target = np.array((100,-200, 455))
-# test.outputNodes()
-# test.outputEdges()
-# print(test.max_distance())
-# s.outputNodes()
-# s.outputEdges()
-# print(s.max_distance())
+target2 = np.array((200, -400, 340))
+target3 = np.array((-150, 200, 200))
 
 # IMPLEMENTING https://www.sciencedirect.com/science/article/pii/S1524070311000178?via%3Dihub
 # FABRIK ALGORITHM 1
@@ -179,6 +330,8 @@ target = np.array((100,-200, 455))
 # TODO: AFTER FABRIK, DO WE NEED MOTOR VELOCITIES FUNCTION? 
 def FABRIK(s, t, tolerance, count): 
 	# base node
+
+	# s = s_a.copy()
 	root = s.getNode(0)
 	# distance between root and target
 	dist = distanceBetween(root, t)
@@ -209,6 +362,9 @@ def FABRIK(s, t, tolerance, count):
 		while dif_a > tolerance and ctr < count:
 			# FORWARD REACHING 
 			# Set the end effector pn as target t
+			# NEW: GET ROTATION FROM PREVIOUS JOINT TO END-EFFECTOR 
+			# AND SEE IF IT IS WITHIN BOUNDS OF PREVIOUS JOINT
+			# s.checkBounds(ee, s.num_links() - 1, t)
 			s.setNode(s.num_links(), t)
 			for i in range(s.num_links() - 1, 0, -1):
 				# Find the distance ri between the new joint position pi+1 and the joint pi
@@ -237,15 +393,99 @@ def FABRIK(s, t, tolerance, count):
 			ctr += 1
 	return iterations
 
-iters = FABRIK(s, target, 1, 1000)
-print(len(iters))
-s.outputDistances()
+# TRANSLATION OF: 
+# https://github.com/zalo/zalo.github.io/blob/master/assets/js/IK/IKExample.js
+def CCDIK(s, t, tolerance, steps):
+	ctr = 0
+	
+	dist = distanceBetween(s.getEndEffector(), t)
+	while (dist > tolerance and ctr < steps):
+		for i in range(s.num_links() - 1, -1, -1):
+			curr = s.getNode(i)
+			ee   = s.getEndEffector()
 
+			vec_to_ee = ee - curr
+			vec_to_target = t - curr
+
+			quat_rot = findQuatforVecs(vec_to_ee, vec_to_target)
+			quat_inv = quat_rot.inverse()
+			curr_axis = s.getAxis(i)
+
+			# FIND THE ROTATION FROM THIS JOINT TO PARENT JOINT
+			# AND CONSTRAIN BY JOINT AXIS TO EMULATE HINGE ROTATION
+			parent_axis = rotatePByQuat(curr_axis, quat_inv)
+			quat_axis = findQuatforVecs(curr_axis, parent_axis)
+			new_quat = quat_rot.multiply(quat_axis)
+
+			## CONSTRAIN THE ROTATION IF THE RESULTING ROTATION
+			## IS GREATER THAN THE CURRENT EULER ANGLE POSITION
+			## OF THE JOINT 
+			## IF JOINT IS ALREADY AT MAX ROTATION, NO ROTATION
+			## CAN BE MADE 
+			new_q = s.constrainQuat(new_quat, i)
+			# s.currRot()
+			if not new_q.equals(Quaternion(0,0,0,0)):
+				s.rotateJByQuat(i, new_quat)
+
+		dist = distanceBetween(s.getEndEffector(), t)
+		# print(dist)
+		ctr += 1
+
+	return ctr
+
+
+
+# foreach joint in jointsTipToBase {
+#   # Point the effector towards the goal
+#   directionToEffector = effector.position - joint.position;
+#   directionToGoal = goal.position - joint.position;
+#   joint.rotateFromTo(directionToEffector, directionToGoal);
+#
+#   # Constrain to rotate about the axis
+#   curHingeAxis = joint.rotation * joint.axis;
+#   hingeAxis = joint.parent.rotation * joint.axis;
+#   joint.rotateFromTo(curHingeAxis, hingeAxis);
+#   joint.localRotation.clampEuler(joint.minLimit, joint.maxLimit);
+# }
+
+# iters = FABRIK(s, target, 1, 1000)
+# print(len(iters))
+s.outputDistances()
+s1 = SimpleArm(np.array(fanuc_nodes), fanuc_edges, fanuc_motors)
+steps  = CCDIK(s, target, 2, 1000)
+steps2 = CCDIK(copy, target2, 2, 1000)
+steps3 = CCDIK(copy2, target3, 2, 1000)
+print("CCDIK TO TARGET POINT %s TOOK %s STEPS" % (target, steps))
+# copy2.rotateJByQuat(1, Quaternion(6, 0, 1, 0))
+s.outputDistances()
+copy2.outputDistances()
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 fig = plt.figure()
-ax  = fig.add_subplot(121, projection='3d')
-ax2 = fig.add_subplot(122, projection='3d')
+ax4 = fig.add_subplot(141, projection='3d')
+ax  = fig.add_subplot(142, projection='3d')
+ax2 = fig.add_subplot(143, projection='3d')
+ax3 = fig.add_subplot(144, projection='3d')
+
+x_lims = [-200,200]
+y_lims = [-200,200]
+z_lims = [0, 1000]
+
+ax.set_xlim(x_lims)
+ax.set_ylim(y_lims)
+ax.set_zlim(z_lims)
+
+ax2.set_xlim(x_lims)
+ax2.set_ylim(y_lims)
+ax2.set_zlim(z_lims)
+
+ax3.set_xlim(x_lims)
+ax3.set_ylim(y_lims)
+ax3.set_zlim(z_lims)
+
+ax4.set_xlim(x_lims)
+ax4.set_ylim(y_lims)
+ax4.set_zlim(z_lims)
 
 x1 = copy.nodes[:,0]
 y1 = copy.nodes[:,1]
@@ -258,8 +498,21 @@ x2 = s.nodes[:,0]
 y2 = s.nodes[:,1]
 z2 = s.nodes[:,2]
 ax2.scatter3D(x2, y2, z2)
-ax2.scatter3D(target[0], target[1], target[2], 'red')
+ax2.scatter3D(target2[0], target2[1], target2[2], 'red')
 ax2.plot3D(x2, y2, z2, 'gray')
+
+x3 = copy2.nodes[:,0]
+y3 = copy2.nodes[:,1]
+z3 = copy2.nodes[:,2]
+ax3.scatter3D(x3, y3, z3)
+ax3.scatter3D(target3[0], target3[1], target3[2], 'red')
+ax3.plot3D(x3, y3, z3, 'gray')
+
+x4 = s1.nodes[:,0]
+y4 = s1.nodes[:,1]
+z4 = s1.nodes[:,2]
+ax4.scatter3D(x4, y4, z4)
+ax4.plot3D(x4, y4, z4, 'gray')
 
 plt.show()
 # print(iters)
